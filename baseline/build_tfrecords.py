@@ -6,6 +6,8 @@ from __future__ import division
 from __future__ import print_function
 
 import os
+import copy
+import sys
 import csv
 import json
 import tensorflow as tf
@@ -14,7 +16,7 @@ from data_utils import ImageReader
 # raw data path
 TRAIN_IMAGE_FOLDER_PATH = '../inputs/train'
 # contain validation and test
-TEST_IMAGE_FODLER_PATH = '../inputs/stage_1_test_images'
+TEST_IMAGE_FOLDER_PATH = '../inputs/stage_1_test_images'
 TRAIN_LABEL_CSV_PATH = '../labels/fixed_train_human_labels.csv'
 # TRAIN_LABEL_CSV_PATH = '../labels/fixed_train_machine_labels.csv'
 VALIDATION_LABEL_CSV_PATH = '../labels/tuning_labels.csv'
@@ -31,8 +33,6 @@ TFRECORD_VALIDATION_PATH = '../inputs/validation_dataset.tfrecord'
 TFRECORD_TEST_PATH = '../inputs/test_dataset.tfrecord'
 
 
-
-
 def _int64_feature(value):
     return tf.train.Feature(int64_list=tf.train.Int64List(value=[value]))
 
@@ -41,65 +41,78 @@ def _bytes_feature(value):
     return tf.train.Feature(bytes_list=tf.train.BytesList(value=[value]))
 
 
-def convert_to_tfrecord():
-    pass
-
-
-def image_to_tfexample(image_data, image_format, height, width, class_id):
+def image_to_tfexample(image_data, height, width, class_ids):
     feature = {
         'image/encoded': _bytes_feature(image_data),
-        'image/format': _bytes_feature(image_format),
-        'image/class/label': _int64_feature(class_id),
+        'image/class/label': _bytes_feature(class_ids),
         'image/height': _int64_feature(height),
         'image/width': _int64_feature(width)
     }
     return tf.train.Example(features=tf.train.Features(feature=feature))
 
 
-def _convert_dataset(split_name, filenames, tfrecord_filepath):
+def convert_to_tfrecord(split_name, filenames, labels):
     """Converts the given filenames to a TFRecord dataset.
     Args
     ----
-        split_name: The name of the dataset, either 'train', 'validation' or 'test'.
-        filenames: A list of absolute paths to png or jpg images.
+        split_name : The name of the dataset, either 'train', 'validation' or 'test'.
+        filenames :  A list of image filesnames.
+        labels : A list of labels of the images.
     """
     assert split_name in ['train', 'validation', 'test']
+    if split_name == 'test':
+        assert labels is None
+    outfile_path = {
+        'train': TFRECORD_TRAIN_PATH,
+        'validation': TFRECORD_VALIDATION_PATH,
+        'test': TFRECORD_TEST_PATH
+    }
     with tf.Graph().as_default():
         image_reader = ImageReader()
         with tf.Session('') as sess:
+            with tf.python_io.TFRecordWriter(outfile_path[split_name]) as tfrecord_writer:
+                print('Preparing {} dataset'.format(split_name))
+                num_slot = 20
+                for i in range(len(filenames)):
+                    # Progress Bar
+                    cursor = int(i/len(filenames) * num_slot) + 1
+                    sys.stdout.write('\r')
+                    sys.stdout.write(
+                        ">> Converting image [%-20s] %d/%d %d%%" % ('='*cursor, i+1, len(filenames), cursor*100/num_slot))
+                    sys.stdout.flush()
 
-            for shard_id in range(_NUM_SHARDS):
-                output_filename = _get_dataset_filename(
-                    dataset_dir, split_name, shard_id, tfrecord_filename=tfrecord_filename, _NUM_SHARDS=_NUM_SHARDS)
+                    # Read the filename:
+                    if split_name == 'test':
+                        class_ids = b''
+                        image_root_path = TEST_IMAGE_FOLDER_PATH
+                    elif split_name == 'validation':
+                        class_ids = labels[i]  # multi labels
+                        image_root_path = TEST_IMAGE_FOLDER_PATH
+                    else:
+                        class_ids = labels[i]  # multi labels
+                        image_root_path = TRAIN_IMAGE_FOLDER_PATH
+                    image_data = tf.gfile.FastGFile(os.path.join(
+                        image_root_path, filenames[i]), 'rb').read()
+                    height, width = image_reader.read_image_dims(
+                        sess, image_data)
+                    example = image_to_tfexample(
+                        image_data, height, width, class_ids)
 
-                with tf.python_io.TFRecordWriter(output_filename) as tfrecord_writer:
-                    start_ndx = shard_id * num_per_shard
-                    end_ndx = min((shard_id+1) * num_per_shard, len(filenames))
-                    for i in range(start_ndx, end_ndx):
-                        sys.stdout.write('\r>> Converting image %d/%d shard %d' % (
-                            i+1, len(filenames), shard_id))
-                        sys.stdout.flush()
+                    # NOTE: get very wierd result-> store decoded data into TFRecord getting smaller file size...
+                    # raw_image = image_reader.decode_jpeg(sess, image_data)
+                    # example = image_to_tfexample(
+                    #     str(raw_image).encode('utf-8'), height, width, class_ids)
 
-                        # Read the filename:
-                        image_data = tf.gfile.FastGFile(
-                            filenames[i], 'rb').read()
-                        height, width = image_reader.read_image_dims(
-                            sess, image_data)
-
-                        class_name = os.path.basename(
-                            os.path.dirname(filenames[i]))
-                        class_id = class_names_to_ids[class_name]
-
-                        example = image_to_tfexample(
-                            image_data, b'jpg', height, width, class_id)
-                        tfrecord_writer.write(example.SerializeToString())
+                    tfrecord_writer.write(example.SerializeToString())
+                sys.stdout.write('\n')
+                sys.stdout.flush()
 
 
 def create_validation_test_dataset():
     with open(LABEL_TO_CLASS_PATH, 'r') as infile:
         label_class_mapping = json.load(infile)
     # get validation filenames/labels by `tuning_labels.csv`
-    test_image_filenames = os.listdir(TEST_IMAGE_FODLER_PATH)
+    test_image_filenames = os.listdir(TEST_IMAGE_FOLDER_PATH)
     validation_image_filenames = []
     validation_labels = []
     file_reader = csv.reader(
@@ -110,12 +123,50 @@ def create_validation_test_dataset():
             validation_image_filenames.append(row[0]+'.jpg')
             labels = [label_class_mapping['code_to_label'][code]
                       for code in label_codes]
-            validation_labels.append(labels)
-    # correctness check
+            validation_labels.append(str(labels).encode(
+                'utf-8'))  # encode to byte code
+    # counterrr = 0
     for filename in validation_image_filenames:
         if filename not in test_image_filenames:
             raise FileNotFoundError(
                 '{} is not found in test dataset'.format(filename))
+    # convert to tfrecord
+    convert_to_tfrecord(
+        'validation', validation_image_filenames, validation_labels)
+    convert_to_tfrecord('test', test_image_filenames, None)
+
+
+def create_train_dataset():
+    with open(LABEL_TO_CLASS_PATH, 'r') as infile:
+        label_class_mapping = json.load(infile)
+    # get validation filenames/labels by `tuning_labels.csv`
+    train_image_filenames = os.listdir(TRAIN_IMAGE_FOLDER_PATH)
+    train_labels_dict = {}
+    file_reader = csv.reader(
+        open(TRAIN_LABEL_CSV_PATH, 'r'), delimiter=',')
+    for i, row in enumerate(file_reader):
+        if i != 0:  # first row is ['ImageID', 'Source', 'LabelName', 'Confidence']
+            label_codes = row[2]
+            filename = row[0]+'.jpg'
+            if filename not in train_labels_dict.keys():
+                train_labels_dict[filename] = [
+                    label_class_mapping['code_to_label'][label_codes]]
+            else:
+                train_labels_dict[filename].append(
+                    label_class_mapping['code_to_label'][label_codes])
+    ordered_train_labels = []
+    temp = copy.deepcopy(train_image_filenames)
+    not_exist_counter = 0
+    for filename in temp:
+        if filename not in train_labels_dict.keys():
+            not_exist_counter += 1
+            train_image_filenames.remove(filename)
+        else:
+            ordered_train_labels.append(
+                str(train_labels_dict[filename]).encode('utf-8'))  # encode to byte code
+    print('There are {} training images not exist in label csv file'.format(not_exist_counter))
+    # convert to tfrecord
+    convert_to_tfrecord('train', train_image_filenames, ordered_train_labels)
 
 
 def create_label_to_classes():
@@ -157,8 +208,8 @@ def create_label_to_classes():
 
 def main():
     # create_label_to_classes()
-    # create_train_dataset()
     create_validation_test_dataset()
+    create_train_dataset()
 
 
 if __name__ == '__main__':

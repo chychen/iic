@@ -8,6 +8,7 @@ import csv
 import os
 import copy
 import operator
+import shutil
 import plotly
 import plotly.graph_objs as go
 import argparse
@@ -127,8 +128,16 @@ def vis_barchart(normalized=False):
     ########################################################################
     counter_dict = copy.deepcopy(trainable_dict)
     file_reader = csv.reader(open(tuning_label_filepath, 'r'), delimiter=',')
+    not_found_counter = 0
     for i, row in enumerate(file_reader):
         if i != 0:  # first row is ['ImageID', 'LabelNamesss']
+            # copy images (optional)
+            test_image_path = os.path.join(IMAGES_PATH, 'stage_1_test_images')
+            validation_image_path = os.path.join(IMAGES_PATH, 'stage_1_validation_images')
+            os.makedirs(validation_image_path, exist_ok=True)
+            shutil.copyfile(os.path.join(test_image_path, str(row[0])+'.jpg'),
+                    os.path.join(validation_image_path, str(row[0])+'.jpg'))
+            # tally
             labels = str(row[1]).split(' ')
             for label in labels:
                 counter_dict[label] = counter_dict[label] + 1
