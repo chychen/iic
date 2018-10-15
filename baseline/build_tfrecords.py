@@ -10,6 +10,7 @@ import copy
 import sys
 import csv
 import json
+import array
 import tensorflow as tf
 from data_utils import ImageReader
 
@@ -78,7 +79,7 @@ def convert_to_tfrecord(split_name, filenames, labels):
                     cursor = int(i/len(filenames) * num_slot) + 1
                     sys.stdout.write('\r')
                     sys.stdout.write(
-                        ">> Converting image [%-20s] %d/%d %d%%" % ('='*cursor, i+1, len(filenames), cursor*100/num_slot))
+                        ">> Converting image [%-20s] %d/%d %.2f%%" % ('='*cursor, i+1, len(filenames), int(100.0*(i+1)/len(filenames))))
                     sys.stdout.flush()
 
                     # Read the filename:
@@ -98,10 +99,7 @@ def convert_to_tfrecord(split_name, filenames, labels):
                     example = image_to_tfexample(
                         image_data, height, width, class_ids)
 
-                    # NOTE: get very wierd result-> store decoded data into TFRecord getting smaller file size...
-                    # raw_image = image_reader.decode_jpeg(sess, image_data)
-                    # example = image_to_tfexample(
-                    #     str(raw_image).encode('utf-8'), height, width, class_ids)
+                    # NOTE: get very wierd result-> store decoded data into TFRecord getting smaller file size..., however I store raw data instead
 
                     tfrecord_writer.write(example.SerializeToString())
                 sys.stdout.write('\n')
@@ -123,8 +121,8 @@ def create_validation_test_dataset():
             validation_image_filenames.append(row[0]+'.jpg')
             labels = [label_class_mapping['code_to_label'][code]
                       for code in label_codes]
-            validation_labels.append(str(labels).encode(
-                'utf-8'))  # encode to byte code
+            # H: unsigned short, encode to byte code
+            validation_labels.append(array.array('H', labels).tostring())
     # counterrr = 0
     for filename in validation_image_filenames:
         if filename not in test_image_filenames:
@@ -162,9 +160,11 @@ def create_train_dataset():
             not_exist_counter += 1
             train_image_filenames.remove(filename)
         else:
-            ordered_train_labels.append(
-                str(train_labels_dict[filename]).encode('utf-8'))  # encode to byte code
-    print('There are {} training images not exist in label csv file'.format(not_exist_counter))
+            # H: unsigned short, encode to byte code
+            ordered_train_labels.append(array.array(
+                'H', train_labels_dict[filename]).tostring())
+    print('There are {} training images not exist in label csv file'.format(
+        not_exist_counter))
     # convert to tfrecord
     convert_to_tfrecord('train', train_image_filenames, ordered_train_labels)
 
@@ -174,9 +174,9 @@ def create_label_to_classes():
     output
     ------
     label_to_class.json
-        - label_to_class['label_to_human'] : label to human readable, such as label_to_class['label_to_human'][3110]='cloth'.
+        - label_to_class['label_to_human'] : label to human readable, such as label_to_class['label_to_human']["3110"]='cloth'.
         - label_to_class['human_to_label'] : to label, such as label_to_class['human_to_label']['cloth']=3110.
-        - label_to_class['label_to_code'] : label to code, such as label_to_class['label_to_code'][5991]='/m/fv809'.
+        - label_to_class['label_to_code'] : label to code, such as label_to_class['label_to_code']["5991"]='/m/fv809'.
         - label_to_class['code_to_label'] : to label, such as label_to_class['code_to_label']['/m/fv809']=5991.
     """
     description_file_reader = csv.reader(
