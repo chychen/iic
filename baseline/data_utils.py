@@ -34,40 +34,32 @@ class Dataset(object):
     """ construct inputs for IIC(Inclusive Images Competition) training.
     """
 
-    def __init__(self, train_data_path, test_data_path, batch_size, train_size=1600000, min_after_dequeue=10000, num_threads=20):
+    def __init__(self, train_data_path, validation_train_data_path, validation_test_data_path, batch_size, buffer_size=100000, num_threads=40):
         self.dataset = {}
-        temp = tf.data.TFRecordDataset(
-            train_data_path).map(self.decode, num_threads)
-        self.dataset['train'] = temp.shard(10, 0)
-        for i in range(1, 9):
-            self.dataset['train'].concatenate(temp.shard(10, i))
-        self.dataset['validation_train'] = temp.shard(10, 9)
+        # temp = tf.data.TFRecordDataset(
+        #     train_data_path).map(self.decode, num_threads)
+        # self.dataset['train'] = temp.shard(10, 0)
+        # for i in range(1, 9):
+        #     self.dataset['train'].concatenate(temp.shard(10, i))
+        # self.dataset['validation_train'] = temp.shard(10, 9)
         # self.dataset['validation_train'] = temp.skip(train_size) # very slow if `train_size` is a huge number.
         ########################
         #### train ###
-        self.dataset['train'] = self.dataset['train'].map(self.preprocessing, num_threads).repeat().shuffle(
-            min_after_dequeue).batch(batch_size)
+        self.dataset['train'] = tf.data.TFRecordDataset(
+            train_data_path).map(self.decode_with_aug, num_threads).repeat().shuffle(buffer_size).batch(batch_size)
         ########################
         ### validation train ###
-        self.dataset['validation_train'] = self.dataset['validation_train'].map(self.no_aug_preprocessing, num_threads).repeat(
-        ).shuffle(min_after_dequeue).batch(batch_size)
+        self.dataset['validation_train'] = tf.data.TFRecordDataset(
+            validation_train_data_path).map(self.decode_with_no_aug, num_threads).repeat().shuffle(buffer_size).batch(batch_size)
         ########################
         ### validation test ###
         self.dataset['validation_test'] = tf.data.TFRecordDataset(
-            test_data_path).map(self.decode, num_threads).map(self.no_aug_preprocessing, num_threads).repeat().shuffle(1000).batch(batch_size)
+            validation_test_data_path).map(self.decode_with_no_aug, num_threads).repeat().shuffle(1000).batch(batch_size)
 
-    def preprocessing(self, image, label):
-        image = tf.image.random_flip_left_right(image)
-        image = tf.image.random_brightness(image, max_delta=63)
-        image = tf.image.random_contrast(image, lower=0.2, upper=1.8)
-        image = tf.image.per_image_standardization(image)
-        return image, label
+    def decode_with_no_aug(self, serialized_example):
+        return self.decode_with_aug(serialized_example, data_aug=False)
 
-    def no_aug_preprocessing(self, image, label):
-        image = tf.image.per_image_standardization(image)
-        return image, label
-
-    def decode(self, serialized_example):
+    def decode_with_aug(self, serialized_example, data_aug=True):
         # 3. Decode the record read by the reader
         feature = {
             'image/encoded': tf.FixedLenFeature([], tf.string),
@@ -89,6 +81,11 @@ class Dataset(object):
         # width = features['image/width']
         # 5. preprocessing
         image = tf.image.resize_image_with_pad(image, 256, 256)
+        if data_aug:
+            image = tf.image.random_flip_left_right(image)
+            image = tf.image.random_brightness(image, max_delta=63)
+            image = tf.image.random_contrast(image, lower=0.2, upper=1.8)
+        image = tf.image.per_image_standardization(image)
         return image, label
 
     def get_next(self, mode='train'):
@@ -149,7 +146,7 @@ if __name__ == '__main__':
 
 
 # tf.TFRecordReader()
-# def get_inputs(data_path, batch_size, mode='train', data_augmentation=True, min_after_dequeue=100000, num_threads=16):
+# def get_inputs(data_path, batch_size, mode='train', data_augmentation=True, buffer_size=100000, num_threads=16):
 #     """ construct inputs for IIC(Inclusive Images Competition) training.
 
 #     Args:
@@ -193,5 +190,5 @@ if __name__ == '__main__':
 #         image = tf.image.random_contrast(image, lower=0.2, upper=1.8)
 #         image = tf.image.per_image_standardization(image)
 #     images, labels = tf.train.shuffle_batch(
-#         [image, label], batch_size=batch_size, capacity=min_after_dequeue+batch_size*num_threads, num_threads=num_threads, min_after_dequeue=min_after_dequeue)
+#         [image, label], batch_size=batch_size, capacity=buffer_size+batch_size*num_threads, num_threads=num_threads, buffer_size=buffer_size)
 #     return images, labels

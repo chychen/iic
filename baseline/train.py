@@ -19,7 +19,9 @@ FLAGS = flags.FLAGS
 
 flags.DEFINE_string('train_dir', './baseline_bn',
                     """Directory where to write event logs and checkpoint.""")
-flags.DEFINE_string('train_data_path', '../inputs/train_dataset.tfrecord',
+flags.DEFINE_string('train_data_path', '../inputs/train_dataset_v2.tfrecord',
+                    """Path where store the training dataset, must be tfrecord format.""")
+flags.DEFINE_string('validation_train_data_path', '../inputs/validation_train_dataset_v2.tfrecord',
                     """Path where store the training dataset, must be tfrecord format.""")
 flags.DEFINE_string('validation_data_path', '../inputs/validation_dataset.tfrecord',
                     """Path where store the validation dataset, must be tfrecord format.""")
@@ -27,9 +29,13 @@ flags.DEFINE_float('lr', 1e-3,
                    "learning rate.")
 flags.DEFINE_float('MOVING_AVERAGE_DECAY', 0.9999,
                    """The decay to use for the moving average.""")
+flags.DEFINE_integer('buffer_size', 10000,
+                     """How many buffer size to make psuedo shuffle.""")
+flags.DEFINE_integer('num_threads', 20,
+                     """How many threads for data Input.""")
 flags.DEFINE_integer('num_gpus', 1,
                      """How many GPUs to use.""")
-flags.DEFINE_integer('batch_size', 128,
+flags.DEFINE_integer('batch_size', 64,
                      """number of data per batch""")
 flags.DEFINE_boolean('log_device_placement', False,
                      """Whether to log device placement.""")
@@ -73,8 +79,14 @@ def tower_loss(scope, logits, labels, mode, resnet_size=50):
     # TODO scope? weight decay? validation_test? embedding? accuracy? saver? restored?
 
     # Calculate loss, which includes softmax cross entropy and L2 regularization.
-    cross_entropy = tf.losses.sigmoid_cross_entropy(
-        logits=logits, multi_class_labels=labels)
+    if mode in ['train', 'validation_train']:
+        # weights = tf.multiply(tf.cast(labels, tf.float32), 1000.0) + 1.0 # example: labels[0,0,1,1,0] -> weights[1,1,7179,7179,1] 
+        cross_entropy = tf.losses.sigmoid_cross_entropy(
+            logits=logits, multi_class_labels=labels, weights=1.0, label_smoothing=0.2)
+    else:  # mode=='validation_test'
+        cross_entropy = tf.losses.sigmoid_cross_entropy(
+            logits=logits, multi_class_labels=labels, weights=1.0, label_smoothing=0.2)
+
     tf.summary.scalar('loss_cross_entropy', cross_entropy, collections=[mode])
 
     # # Assemble all of the losses for the current tower only.
@@ -139,7 +151,7 @@ def train():
         # batch_images, batch_labels = data_utils.get_inputs(
         #     FLAGS.train_data_path, FLAGS.batch_size//FLAGS.num_gpus)
         dataset = data_utils.Dataset(
-            FLAGS.train_data_path, FLAGS.validation_data_path, FLAGS.batch_size//FLAGS.num_gpus)
+            FLAGS.train_data_path, FLAGS.validation_train_data_path, FLAGS.validation_data_path, FLAGS.batch_size//FLAGS.num_gpus, buffer_size=FLAGS.buffer_size, num_threads=FLAGS.num_threads)
         batch_images, batch_labels = dataset.get_next('train')
         tf.summary.image(
             'train images', batch_images, collections=['train'])
@@ -159,32 +171,36 @@ def train():
                     with tf.name_scope('tower_%d' % (i)) as scope:
                         # Build inference Graph.
                         model = resnet_model.Model(resnet_size=18,
-                                                bottleneck=False,
-                                                num_classes=data_utils.NUM_CLASSES,
-                                                num_filters=64,
-                                                kernel_size=7,
-                                                conv_stride=2,
-                                                first_pool_size=3,
-                                                first_pool_stride=2,
-                                                block_sizes=_get_block_sizes(18),
-                                                block_strides=[1, 2, 2, 2],
-                                                resnet_version=resnet_model.DEFAULT_VERSION,
-                                                data_format='channels_last',
-                                                dtype=tf.float32)
+                                                   bottleneck=False,
+                                                   num_classes=data_utils.NUM_CLASSES,
+                                                   num_filters=64,
+                                                   kernel_size=7,
+                                                   conv_stride=2,
+                                                   first_pool_size=3,
+                                                   first_pool_stride=2,
+                                                   block_sizes=_get_block_sizes(
+                                                       18),
+                                                   block_strides=[1, 2, 2, 2],
+                                                   resnet_version=resnet_model.DEFAULT_VERSION,
+                                                   data_format='channels_last',
+                                                   dtype=tf.float32)
                         ######################
                         ##       train      ##
                         logits = model(batch_images, training=True)
-                        loss = tower_loss(scope, logits, batch_labels, mode='train')
+                        loss = tower_loss(
+                            scope, logits, batch_labels, mode='train')
                         # Reuse variables for the next tower.
                         tf.get_variable_scope().reuse_variables()
                         ######################
                         ## validation_train ##
-                        vtrain_logits = model(vtrain_batch_images, training=True)
+                        vtrain_logits = model(
+                            vtrain_batch_images, training=True)
                         vtrain_loss = tower_loss(
                             scope, vtrain_logits, vtrain_batch_labels, mode='validation_train')
                         ######################
                         ##  validation_test ##
-                        vtest_logits = model(vtest_batch_images, training=False)
+                        vtest_logits = model(
+                            vtest_batch_images, training=False)
                         vtest_loss = tower_loss(
                             scope, vtest_logits, vtest_batch_labels, mode='validation_test')
                         # Calculate the gradients for the batch of data on this CIFAR tower.
