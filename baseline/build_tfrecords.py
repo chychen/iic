@@ -12,6 +12,7 @@ import csv
 import json
 import array
 import tensorflow as tf
+from random import shuffle
 from data_utils import ImageReader
 
 # raw data path
@@ -29,7 +30,8 @@ CLASSES_DES_CSV_PATH = '../labels/class-descriptions.csv'
 
 # output
 LABEL_TO_CLASS_PATH = '../inputs/label_to_class.json'
-TFRECORD_TRAIN_PATH = '../inputs/train_dataset.tfrecord'
+TFRECORD_TRAIN_PATH = '../inputs/train_dataset_v2.tfrecord'
+TFRECORD_VALIDATION_TRAIN_PATH = '../inputs/validation_train_dataset_v2.tfrecord'
 TFRECORD_VALIDATION_PATH = '../inputs/validation_dataset.tfrecord'
 TFRECORD_TEST_PATH = '../inputs/test_dataset.tfrecord'
 
@@ -60,11 +62,12 @@ def convert_to_tfrecord(split_name, filenames, labels):
         filenames :  A list of image filesnames.
         labels : A list of labels of the images.
     """
-    assert split_name in ['train', 'validation', 'test']
+    assert split_name in ['train', 'validation_train', 'validation', 'test']
     if split_name == 'test':
         assert labels is None
     outfile_path = {
         'train': TFRECORD_TRAIN_PATH,
+        'validation_train': TFRECORD_VALIDATION_TRAIN_PATH,
         'validation': TFRECORD_VALIDATION_PATH,
         'test': TFRECORD_TEST_PATH
     }
@@ -139,6 +142,7 @@ def create_train_dataset():
         label_class_mapping = json.load(infile)
     # get validation filenames/labels by `tuning_labels.csv`
     train_image_filenames = os.listdir(TRAIN_IMAGE_FOLDER_PATH)
+    shuffle(train_image_filenames)
     train_labels_dict = {}
     file_reader = csv.reader(
         open(TRAIN_LABEL_CSV_PATH, 'r'), delimiter=',')
@@ -166,7 +170,12 @@ def create_train_dataset():
     print('There are {} training images not exist in label csv file'.format(
         not_exist_counter))
     # convert to tfrecord
-    convert_to_tfrecord('train', train_image_filenames, ordered_train_labels)
+    train_data_amount = len(train_image_filenames)
+    print('training dataset amount::', train_data_amount)
+    convert_to_tfrecord(
+        'train', train_image_filenames[:train_data_amount*9//10], ordered_train_labels[:train_data_amount*9//10])
+    convert_to_tfrecord(
+        'validation_train', train_image_filenames[train_data_amount*9//10:], ordered_train_labels[train_data_amount*9//10:])
 
 
 def create_label_to_classes():
@@ -208,7 +217,7 @@ def create_label_to_classes():
 
 def main():
     # create_label_to_classes()
-    create_validation_test_dataset()
+    # create_validation_test_dataset()
     create_train_dataset()
 
 
