@@ -23,8 +23,8 @@ class ImageReader(object):
         return image.shape[0], image.shape[1]
 
     def decode_jpeg(self, sess, image_data):
-        image = sess.run(self._decode_jpeg,
-                         feed_dict={self._decode_jpeg_data: image_data})
+        image = sess.run(
+            self._decode_jpeg, feed_dict={self._decode_jpeg_data: image_data})
         assert len(image.shape) == 3
         assert image.shape[2] == 3
         return image
@@ -34,7 +34,9 @@ class Dataset(object):
     """ construct inputs for IIC(Inclusive Images Competition) training.
     """
 
-    def __init__(self, train_data_path, validation_train_data_path, validation_test_data_path, batch_size, buffer_size=100000, num_threads=40):
+    def __init__(self, train_data_path, validation_train_data_path,
+                 validation_test_data_path, batch_size, buffer_size,
+                 num_threads):
         self.dataset = {}
         # temp = tf.data.TFRecordDataset(
         #     train_data_path).map(self.decode, num_threads)
@@ -45,16 +47,30 @@ class Dataset(object):
         # self.dataset['validation_train'] = temp.skip(train_size) # very slow if `train_size` is a huge number.
         ########################
         #### train ###
-        self.dataset['train'] = tf.data.TFRecordDataset(
-            train_data_path).map(self.decode_with_aug, num_threads).repeat().shuffle(buffer_size).batch(batch_size)
+        self.dataset['train'] = tf.data.TFRecordDataset(train_data_path).map(
+            self.decode_with_aug,
+            num_threads).repeat().shuffle(buffer_size).batch(batch_size)
         ########################
         ### validation train ###
         self.dataset['validation_train'] = tf.data.TFRecordDataset(
-            validation_train_data_path).map(self.decode_with_no_aug, num_threads).repeat().shuffle(buffer_size).batch(batch_size)
+            validation_train_data_path).map(
+                self.decode_with_no_aug,
+                num_threads).repeat().shuffle(buffer_size).batch(batch_size)
         ########################
         ### validation test ###
         self.dataset['validation_test'] = tf.data.TFRecordDataset(
-            validation_test_data_path).map(self.decode_with_no_aug, num_threads).repeat().shuffle(1000).batch(batch_size)
+            validation_test_data_path).map(
+                self.decode_with_no_aug,
+                num_threads).repeat().shuffle(1000).batch(batch_size)
+        
+        # create the iterators from the dataset
+        self.train_iterator = self.dataset['train'].make_initializable_iterator()
+        self.vtrain_iterator = self.dataset['validation_train'].make_initializable_iterator()
+        self.vtest_iterator = self.dataset['validation_test'].make_initializable_iterator()
+        # same as in the doc https://www.tensorflow.org/programmers_guide/datasets#creating_an_iterator
+        self.handle = tf.placeholder(tf.string, shape=[])
+        self.__iterator = tf.data.Iterator.from_string_handle(
+            self.handle, self.dataset['train'].output_types, self.dataset['train'].output_shapes)
 
     def decode_with_no_aug(self, serialized_example):
         return self.decode_with_aug(serialized_example, data_aug=False)
@@ -76,7 +92,7 @@ class Dataset(object):
         label = tf.cast(label, tf.int32)
         # label is not sorted -> validate_indices=False
         label = tf.sparse_to_dense(
-            label, (NUM_CLASSES,), 1, 0, validate_indices=False)
+            label, (NUM_CLASSES, ), 1, 0, validate_indices=False)
         # height = features['image/height']
         # width = features['image/width']
         # 5. preprocessing
@@ -88,18 +104,13 @@ class Dataset(object):
         image = tf.image.per_image_standardization(image)
         return image, label
 
-    def get_next(self, mode='train'):
-        """ 
-        Args:
-            mode: 'train', 'validation_train', 'validation_test'
-
+    def get_next(self):
+        """
         Returns:
             Images: 4D tensor of [batch_size, height, width, 3].
             labels: 2D tensor of [batch_size, num_classes]
         """
-        assert mode in ['train', 'validation_train', 'validation_test']
-        iterator = self.dataset[mode].make_one_shot_iterator()
-        return iterator.get_next()
+        return self.__iterator.get_next()
 
 
 def get_label_class_mapping():
@@ -109,41 +120,40 @@ def get_label_class_mapping():
     return label_class_mapping
 
 
-def test():
-    LABEL_TO_CLASS_PATH = '../inputs/label_to_class.json'
-    with open(LABEL_TO_CLASS_PATH, 'r') as infile:
-        label_class_mapping = json.load(infile)
-    with tf.Session() as sess:
-        images, labels = get_inputs('../inputs/train_dataset.tfrecord', 32)
-        # Initialize all global and local variables
-        init_op = tf.group(tf.global_variables_initializer(),
-                           tf.local_variables_initializer())
-        sess.run(init_op)
-        # Create a coordinator and run all QueueRunner objects
-        coord = tf.train.Coordinator()
-        threads = tf.train.start_queue_runners(coord=coord)
-        print('threads', threads)
-        for _ in range(50):
-            img, lbl = sess.run([images, labels])
-            img = np.array(img)
-            print(img.shape)
-            for i in range(img.shape[0]):
-                data = Image.fromarray(img[i], 'RGB')
-                data.save('my_{}.png'.format(i))
-                for i, v in enumerate(lbl[i]):
-                    if v != 0:
-                        print(label_class_mapping['label_to_human'][str(i)])
-                input()
+# Deprecated testing code
+# def test():
+#     LABEL_TO_CLASS_PATH = '../inputs/label_to_class.json'
+#     with open(LABEL_TO_CLASS_PATH, 'r') as infile:
+#         label_class_mapping = json.load(infile)
+#     with tf.Session() as sess:
+#         images, labels = get_next('../inputs/train_dataset.tfrecord', 32)
+#         # Initialize all global and local variables
+#         init_op = tf.group(tf.global_variables_initializer(),
+#                            tf.local_variables_initializer())
+#         sess.run(init_op)
+#         # Create a coordinator and run all QueueRunner objects
+#         coord = tf.train.Coordinator()
+#         threads = tf.train.start_queue_runners(coord=coord)
+#         print('threads', threads)
+#         for _ in range(50):
+#             img, lbl = sess.run([images, labels])
+#             img = np.array(img)
+#             print(img.shape)
+#             for i in range(img.shape[0]):
+#                 data = Image.fromarray(img[i], 'RGB')
+#                 data.save('my_{}.png'.format(i))
+#                 for i, v in enumerate(lbl[i]):
+#                     if v != 0:
+#                         print(label_class_mapping['label_to_human'][str(i)])
+#                 input()
 
-        # Stop the threads
-        coord.request_stop()
-        # Wait for threads to stop
-        coord.join(threads)
-
+#         # Stop the threads
+#         coord.request_stop()
+#         # Wait for threads to stop
+#         coord.join(threads)
 
 if __name__ == '__main__':
     test()
-
 
 # tf.TFRecordReader()
 # def get_inputs(data_path, batch_size, mode='train', data_augmentation=True, buffer_size=100000, num_threads=16):

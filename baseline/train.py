@@ -19,26 +19,28 @@ FLAGS = flags.FLAGS
 
 flags.DEFINE_string('train_dir', './baseline_bn',
                     """Directory where to write event logs and checkpoint.""")
-flags.DEFINE_string('train_data_path', '../inputs/train_dataset_v2.tfrecord',
-                    """Path where store the training dataset, must be tfrecord format.""")
-flags.DEFINE_string('validation_train_data_path', '../inputs/validation_train_dataset_v2.tfrecord',
-                    """Path where store the training dataset, must be tfrecord format.""")
-flags.DEFINE_string('validation_data_path', '../inputs/validation_dataset.tfrecord',
-                    """Path where store the validation dataset, must be tfrecord format.""")
-flags.DEFINE_float('lr', 1e-3,
-                   "learning rate.")
+flags.DEFINE_string(
+    'train_data_path', '../inputs/train_dataset_v2.tfrecord',
+    """Path where store the training dataset, must be tfrecord format.""")
+flags.DEFINE_string(
+    'validation_train_data_path',
+    '../inputs/validation_train_dataset_v2.tfrecord',
+    """Path where store the training dataset, must be tfrecord format.""")
+flags.DEFINE_string(
+    'validation_data_path', '../inputs/validation_dataset.tfrecord',
+    """Path where store the validation dataset, must be tfrecord format.""")
+flags.DEFINE_float('lr', 1e-3, "learning rate.")
 flags.DEFINE_float('MOVING_AVERAGE_DECAY', 0.9999,
                    """The decay to use for the moving average.""")
-flags.DEFINE_integer('buffer_size', 10000,
+flags.DEFINE_integer('buffer_size', 100000,
                      """How many buffer size to make psuedo shuffle.""")
-flags.DEFINE_integer('num_threads', 20,
-                     """How many threads for data Input.""")
-flags.DEFINE_integer('num_gpus', 1,
-                     """How many GPUs to use.""")
-flags.DEFINE_integer('batch_size', 64,
-                     """number of data per batch""")
+flags.DEFINE_integer('num_threads', 40, """How many threads for data Input.""")
+flags.DEFINE_integer('num_gpus', 4, """How many GPUs to use.""")
+flags.DEFINE_integer('batch_size', 256, """number of data per batch""")
 flags.DEFINE_boolean('log_device_placement', False,
                      """Whether to log device placement.""")
+
+LOG_COLLECTIONS = ['train', 'validation_train', 'validation_test']
 
 
 def _get_block_sizes(resnet_size):
@@ -68,26 +70,43 @@ def _get_block_sizes(resnet_size):
     return choices[resnet_size]
 
 
-def tower_loss(scope, logits, labels, mode, resnet_size=50):
+def tower_loss(scope, images, labels, is_training, resnet_size=50):
     """Calculate the total loss on a single tower running the model.
     Args:
         scope: unique prefix string identifying the CIFAR tower, e.g. 'tower_0'
+        images: Images. 4D tensor of shape [batch_size, height, width, 3].
         labels: Labels. 2D tensor of shape [batch_size, num_classes].
     Returns:
         Tensor of shape [] containing the total loss for a batch of data
     """
     # TODO scope? weight decay? validation_test? embedding? accuracy? saver? restored?
+    # TODO Calculate loss, which includes softmax cross entropy and L2 regularization.
 
-    # Calculate loss, which includes softmax cross entropy and L2 regularization.
-    if mode in ['train', 'validation_train']:
-        # weights = tf.multiply(tf.cast(labels, tf.float32), 1000.0) + 1.0 # example: labels[0,0,1,1,0] -> weights[1,1,7179,7179,1] 
-        cross_entropy = tf.losses.sigmoid_cross_entropy(
-            logits=logits, multi_class_labels=labels, weights=1.0, label_smoothing=0.2)
-    else:  # mode=='validation_test'
-        cross_entropy = tf.losses.sigmoid_cross_entropy(
-            logits=logits, multi_class_labels=labels, weights=1.0, label_smoothing=0.2)
-
-    tf.summary.scalar('loss_cross_entropy', cross_entropy, collections=[mode])
+    # Build inference Graph.
+    model = resnet_model.Model(
+        resnet_size=18,
+        bottleneck=False,
+        num_classes=data_utils.NUM_CLASSES,
+        num_filters=64,
+        kernel_size=7,
+        conv_stride=2,
+        first_pool_size=3,
+        first_pool_stride=2,
+        block_sizes=_get_block_sizes(18),
+        block_strides=[1, 2, 2, 2],
+        resnet_version=resnet_model.DEFAULT_VERSION,
+        data_format='channels_last',
+        dtype=tf.float32)
+    logits = model(images, training=is_training)
+    # weights = tf.multiply(tf.cast(labels, tf.float32), 1000.0) + 1.0 # example: labels[0,0,1,1,0] -> weights[1,1,7179,7179,1]
+    cross_entropy = tf.losses.sigmoid_cross_entropy(
+        logits=logits,
+        multi_class_labels=labels,
+        weights=1.0,
+        label_smoothing=0.0)
+    tf.summary.histogram('logits', logits, collections=LOG_COLLECTIONS)
+    tf.summary.scalar(
+        'loss_cross_entropy', cross_entropy, collections=LOG_COLLECTIONS)
 
     # # Assemble all of the losses for the current tower only.
     # losses = tf.get_collection('losses', scope)
@@ -151,80 +170,44 @@ def train():
         # batch_images, batch_labels = data_utils.get_inputs(
         #     FLAGS.train_data_path, FLAGS.batch_size//FLAGS.num_gpus)
         dataset = data_utils.Dataset(
-            FLAGS.train_data_path, FLAGS.validation_train_data_path, FLAGS.validation_data_path, FLAGS.batch_size//FLAGS.num_gpus, buffer_size=FLAGS.buffer_size, num_threads=FLAGS.num_threads)
-        batch_images, batch_labels = dataset.get_next('train')
+            FLAGS.train_data_path,
+            FLAGS.validation_train_data_path,
+            FLAGS.validation_data_path,
+            FLAGS.batch_size // FLAGS.num_gpus,
+            buffer_size=FLAGS.buffer_size,
+            num_threads=FLAGS.num_threads)
+        batch_images, batch_labels = dataset.get_next()
         tf.summary.image(
-            'train images', batch_images, collections=['train'])
-        vtrain_batch_images, vtrain_batch_labels = dataset.get_next(
-            'validation_train')
-        tf.summary.image(
-            'validation train images', vtrain_batch_images, collections=['validation_train'])
-        vtest_batch_images, vtest_batch_labels = dataset.get_next(
-            'validation_test')
-        tf.summary.image(
-            'validation test images', vtest_batch_images, collections=['validation_test'])
+            'train images', batch_images, collections=LOG_COLLECTIONS)
         # Calculate the gradients for each model tower.
         tower_grads = []
         with tf.variable_scope(tf.get_variable_scope()):
             for i in range(FLAGS.num_gpus):
                 with tf.device('/gpu:%d' % i):
                     with tf.name_scope('tower_%d' % (i)) as scope:
-                        # Build inference Graph.
-                        model = resnet_model.Model(resnet_size=18,
-                                                   bottleneck=False,
-                                                   num_classes=data_utils.NUM_CLASSES,
-                                                   num_filters=64,
-                                                   kernel_size=7,
-                                                   conv_stride=2,
-                                                   first_pool_size=3,
-                                                   first_pool_stride=2,
-                                                   block_sizes=_get_block_sizes(
-                                                       18),
-                                                   block_strides=[1, 2, 2, 2],
-                                                   resnet_version=resnet_model.DEFAULT_VERSION,
-                                                   data_format='channels_last',
-                                                   dtype=tf.float32)
-                        ######################
-                        ##       train      ##
-                        logits = model(batch_images, training=True)
-                        loss = tower_loss(
-                            scope, logits, batch_labels, mode='train')
+                        is_training = tf.placeholder(tf.bool)
+                        loss = tower_loss(scope, batch_images, batch_labels,
+                                          is_training)
                         # Reuse variables for the next tower.
                         tf.get_variable_scope().reuse_variables()
-                        ######################
-                        ## validation_train ##
-                        vtrain_logits = model(
-                            vtrain_batch_images, training=True)
-                        vtrain_loss = tower_loss(
-                            scope, vtrain_logits, vtrain_batch_labels, mode='validation_train')
-                        ######################
-                        ##  validation_test ##
-                        vtest_logits = model(
-                            vtest_batch_images, training=False)
-                        vtest_loss = tower_loss(
-                            scope, vtest_logits, vtest_batch_labels, mode='validation_test')
                         # Calculate the gradients for the batch of data on this CIFAR tower.
                         grads = optimizer.compute_gradients(loss)
                         # Keep track of the gradients across all towers.
                         tower_grads.append(grads)
         # summary
-        summaries = tf.get_collection(
-            'train')
+        summaries = tf.get_collection('train')
+        vtrain_summaries = tf.get_collection('validation_train')
+        vtest_summaries = tf.get_collection('validation_test')
         # Add a summary to track the learning rate.
         summaries.append(tf.summary.scalar('learning_rate', FLAGS.lr))
-        vtrain_summaries = tf.get_collection(
-            'validation_train')
-        vtest_summaries = tf.get_collection(
-            'validation_test')
         # We must calculate the mean of each gradient. Note that this is the
         # synchronization point across all towers.
         grads = average_gradients(tower_grads)
         # Add histograms for gradients.
         for grad, var in grads:
             if grad is not None:
-                summaries.append(tf.summary.histogram(
-                    var.op.name + '/gradients', grad))
-
+                summaries.append(
+                    tf.summary.histogram(var.op.name + '/gradients', grad))
         # Apply the gradients to adjust the shared variables.
         apply_gradient_op = optimizer.apply_gradients(
             grads, global_step=global_step)
@@ -237,17 +220,31 @@ def train():
         variables_averages_op = variable_averages.apply(
             tf.trainable_variables())
         # Group all updates to into a single train op.
-        train_op = tf.group(apply_gradient_op, variables_averages_op)
+        update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+        with tf.control_dependencies(update_ops):
+            # train_op = optimizer.minimize(loss)
+            train_op = tf.group(apply_gradient_op, variables_averages_op)
         saver = tf.train.Saver(tf.global_variables())
         summary_op = tf.summary.merge(summaries)
         vtrain_summary_op = tf.summary.merge(vtrain_summaries)
         vtest_summary_op = tf.summary.merge(vtest_summaries)
         init = tf.global_variables_initializer()
-        num_batch_per_epoch = int(1.7e6//(FLAGS.batch_size*FLAGS.num_gpus))
-        with tf.Session(config=tf.ConfigProto(
-                allow_soft_placement=True,
-                log_device_placement=FLAGS.log_device_placement)) as sess:
+        num_batch_per_epoch = int(1.7e6 // (FLAGS.batch_size * FLAGS.num_gpus))
+        with tf.Session(
+                config=tf.ConfigProto(
+                    allow_soft_placement=True,
+                    log_device_placement=FLAGS.log_device_placement)) as sess:
             sess.run(init)
+            train_handle, vtrain_handle, vtest_handle = sess.run([
+                dataset.train_iterator.string_handle(),
+                dataset.vtrain_iterator.string_handle(),
+                dataset.vtest_iterator.string_handle()
+            ])
+            sess.run([
+                dataset.train_iterator.initializer,
+                dataset.vtrain_iterator.initializer,
+                dataset.vtest_iterator.initializer
+            ])
             # Create a coordinator and run all QueueRunner objects
             coord = tf.train.Coordinator()
             threads = tf.train.start_queue_runners(sess=sess, coord=coord)
@@ -260,32 +257,47 @@ def train():
             batch_idx = 0
             while True:
                 start_time = time.time()
-                _, loss_value, global_step_v = sess.run(
-                    [train_op, loss, global_step])
+                _, loss_value, global_step_v, summary_str = sess.run(
+                    [train_op, loss, global_step, summary_op],
+                    feed_dict={
+                        dataset.handle: train_handle,
+                        is_training: True
+                    })
                 batch_idx = global_step_v // FLAGS.num_gpus
                 duration = time.time() - start_time
                 # assert not np.isnan(loss_value), 'Model diverged with loss = NaN'
-                if global_step_v % (100*FLAGS.num_gpus) == 0:
-                    vtrain_loss_value, vtest_loss_value = sess.run(
-                        [vtrain_loss, vtest_loss])
+                if global_step_v % (100 * FLAGS.num_gpus) == 0:
+                    vtrain_loss_value, vtrain_summary_str = sess.run(
+                        [loss, vtrain_summary_op],
+                        feed_dict={
+                            dataset.handle: vtrain_handle,
+                            is_training: False
+                        })
+                    vtest_loss_value, vtest_summary_str = sess.run(
+                        [loss, vtest_summary_op],
+                        feed_dict={
+                            dataset.handle: vtest_handle,
+                            is_training: False
+                        })
                     examples_per_sec = FLAGS.batch_size / duration
                     sec_per_batch = duration
                     format_str = (
-                        '%s: batch_id %d, epoch_id %d, loss = %f vtrain_loss_value = %f vtest_loss_value = %f (%.2f examples/sec; %.2f sec/batch)')
-                    print(format_str % (datetime.now(), batch_idx, batch_idx // num_batch_per_epoch,
-                                        loss_value, vtrain_loss_value, vtest_loss_value, examples_per_sec, sec_per_batch))
-                if global_step_v % (100*FLAGS.num_gpus) == 0:
-                    summary_str, vtrain_summary_str, vtest_summary_str = sess.run(
-                        [summary_op, vtrain_summary_op, vtest_summary_op])
+                        '%s: batch_id %d, epoch_id %d, loss = %f vtrain_loss_value = %f vtest_loss_value = %f (%.2f examples/sec; %.2f sec/batch)'
+                    )
+                    print(format_str %
+                          (datetime.now(), batch_idx, batch_idx //
+                           num_batch_per_epoch, loss_value, vtrain_loss_value,
+                           vtest_loss_value, examples_per_sec, sec_per_batch))
+                if global_step_v % (100 * FLAGS.num_gpus) == 0:
                     summary_writer.add_summary(summary_str, batch_idx)
-                    vtrain_summary_writer.add_summary(
-                        vtrain_summary_str, batch_idx)
-                    vtest_summary_writer.add_summary(
-                        vtest_summary_str, batch_idx)
+                    vtrain_summary_writer.add_summary(vtrain_summary_str,
+                                                      batch_idx)
+                    vtest_summary_writer.add_summary(vtest_summary_str,
+                                                     batch_idx)
                 # Save the model checkpoint periodically.
-                if global_step_v % (10000*FLAGS.num_gpus) == 0:
-                    checkpoint_path = os.path.join(
-                        FLAGS.train_dir, 'model.ckpt')
+                if global_step_v % (10000 * FLAGS.num_gpus) == 0:
+                    checkpoint_path = os.path.join(FLAGS.train_dir,
+                                                   'model.ckpt')
                     saver.save(sess, checkpoint_path, global_step=batch_idx)
             # Stop the threads
             coord.request_stop()
