@@ -37,6 +37,10 @@ class Dataset(object):
     def __init__(self, train_data_path, validation_train_data_path,
                  validation_test_data_path, batch_size, buffer_size,
                  num_threads):
+
+        LABEL_TO_CLASS_PATH = '../inputs/label_to_class.json'
+        with open(LABEL_TO_CLASS_PATH, 'r') as infile:
+            self.label_class_mapping = json.load(infile)
         self.dataset = {}
         # temp = tf.data.TFRecordDataset(
         #     train_data_path).map(self.decode, num_threads)
@@ -62,15 +66,19 @@ class Dataset(object):
             validation_test_data_path).map(
                 self.decode_with_no_aug,
                 num_threads).repeat().shuffle(1000).batch(batch_size)
-        
+
         # create the iterators from the dataset
-        self.train_iterator = self.dataset['train'].make_initializable_iterator()
-        self.vtrain_iterator = self.dataset['validation_train'].make_initializable_iterator()
-        self.vtest_iterator = self.dataset['validation_test'].make_initializable_iterator()
+        self.train_iterator = self.dataset[
+            'train'].make_initializable_iterator()
+        self.vtrain_iterator = self.dataset[
+            'validation_train'].make_initializable_iterator()
+        self.vtest_iterator = self.dataset[
+            'validation_test'].make_initializable_iterator()
         # same as in the doc https://www.tensorflow.org/programmers_guide/datasets#creating_an_iterator
         self.handle = tf.placeholder(tf.string, shape=[])
         self.__iterator = tf.data.Iterator.from_string_handle(
-            self.handle, self.dataset['train'].output_types, self.dataset['train'].output_shapes)
+            self.handle, self.dataset['train'].output_types,
+            self.dataset['train'].output_shapes)
 
     def decode_with_no_aug(self, serialized_example):
         return self.decode_with_aug(serialized_example, data_aug=False)
@@ -112,12 +120,11 @@ class Dataset(object):
         """
         return self.__iterator.get_next()
 
+    def get_label_to_human_readable(self):
+        return self.label_class_mapping['label_to_human']
 
-def get_label_class_mapping():
-    LABEL_TO_CLASS_PATH = '../inputs/label_to_class.json'
-    with open(LABEL_TO_CLASS_PATH, 'r') as infile:
-        label_class_mapping = json.load(infile)
-    return label_class_mapping
+    def get_human_readable_to_label(self):
+        return self.label_class_mapping['human_to_label']
 
 
 # Deprecated testing code

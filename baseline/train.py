@@ -8,17 +8,22 @@ from datetime import datetime
 import os.path
 import re
 import time
-
+import json
 import numpy as np
+from tensorboard import summary as summary_lib
 import tensorflow as tf
 from absl import flags
 import data_utils
+import tf_utils
 import resnet_model
 
 FLAGS = flags.FLAGS
-
-flags.DEFINE_string('train_dir', './baseline_bn',
+flags.DEFINE_string('comment', None,
+                    """Why do you train? What do you want to verify?""")
+flags.DEFINE_string('train_dir', None,
                     """Directory where to write event logs and checkpoint.""")
+flags.DEFINE_string('restore_path', None,
+                    """Directory where to restore checkpoint.""")
 flags.DEFINE_string(
     'train_data_path', '../inputs/train_dataset_v2.tfrecord',
     """Path where store the training dataset, must be tfrecord format.""")
@@ -41,6 +46,10 @@ flags.DEFINE_boolean('log_device_placement', False,
                      """Whether to log device placement.""")
 
 LOG_COLLECTIONS = ['train', 'validation_train', 'validation_test']
+# (Human)   Training Dataset: [Person:807k, Plant:267k, Street:0.4k, Art:2k]
+# (Machine) Training Dataset: [Person:146k, Plant:114k, Street:55k, Art:114k]
+# Stage One Tuning Dataset  : [Person:322, Plant:122, Street:63, Art:45]
+TARGET_LABELS = ['Person', 'Plant', 'Street', 'Art']
 
 
 def _get_block_sizes(resnet_size):
@@ -70,7 +79,7 @@ def _get_block_sizes(resnet_size):
     return choices[resnet_size]
 
 
-def tower_loss(scope, images, labels, is_training, resnet_size=50):
+def tower_loss(scope, images, labels, is_training, human_to_label):
     """Calculate the total loss on a single tower running the model.
     Args:
         scope: unique prefix string identifying the CIFAR tower, e.g. 'tower_0'
@@ -104,9 +113,53 @@ def tower_loss(scope, images, labels, is_training, resnet_size=50):
         multi_class_labels=labels,
         weights=1.0,
         label_smoothing=0.0)
-    tf.summary.histogram('logits', logits, collections=LOG_COLLECTIONS)
-    tf.summary.scalar(
-        'loss_cross_entropy', cross_entropy, collections=LOG_COLLECTIONS)
+
+    # log summary of single gpu on tensorboard
+    if 'tower_0' in scope:
+        tf.summary.histogram('logits', logits, collections=LOG_COLLECTIONS)
+        tf.summary.scalar(
+            'loss_cross_entropy',
+            cross_entropy,
+            collections=LOG_COLLECTIONS,
+            family='iic')
+
+        logits_round = tf.cast(tf.round(tf.sigmoid(logits)), tf.int32)
+        CM = tf_utils.Confusion_Matrix(logits_round, labels)
+        tf.summary.scalar(
+            'MEAN/f2_score',
+            CM.f2_score,
+            collections=LOG_COLLECTIONS,
+            family='iic')
+        tf.summary.scalar(
+            'MEAN/precision',
+            CM.precision,
+            collections=LOG_COLLECTIONS,
+            family='iic')
+        tf.summary.scalar(
+            'MEAN/recall',
+            CM.recall,
+            collections=LOG_COLLECTIONS,
+            family='iic')
+
+        for label_name in TARGET_LABELS:
+            label_int = human_to_label[label_name]
+            CM_target = tf_utils.Confusion_Matrix(logits_round[:, label_int],
+                                                  labels[:, label_int])
+            tf.summary.scalar(
+                '{}/f2_score'.format(label_name),
+                CM_target.f2_score,
+                collections=LOG_COLLECTIONS,
+                family=label_name)
+            tf.summary.scalar(
+                '{}/precision'.format(label_name),
+                CM_target.precision,
+                collections=LOG_COLLECTIONS,
+                family=label_name)
+            tf.summary.scalar(
+                '{}/recall'.format(label_name),
+                CM_target.recall,
+                collections=LOG_COLLECTIONS,
+                family=label_name)
 
     # # Assemble all of the losses for the current tower only.
     # losses = tf.get_collection('losses', scope)
@@ -121,7 +174,6 @@ def tower_loss(scope, images, labels, is_training, resnet_size=50):
     # # session. This helps the clarity of presentation on tensorboard.
     # loss_name = re.sub('%s_[0-9]*/' % cifar10.TOWER_NAME, '', l.op.name)
     # tf.summary.scalar(loss_name, l)
-
     return cross_entropy
 
 
@@ -144,14 +196,11 @@ def average_gradients(tower_grads):
         for g, _ in grad_and_vars:
             # Add 0 dimension to the gradients to represent the tower.
             expanded_g = tf.expand_dims(g, 0)
-
             # Append on a 'tower' dimension which we will average over below.
             grads.append(expanded_g)
-
         # Average over the 'tower' dimension.
         grad = tf.concat(axis=0, values=grads)
         grad = tf.reduce_mean(grad, 0)
-
         # Keep in mind that the Variables are redundant because they are shared
         # across towers. So .. we will just return the first tower's pointer to
         # the Variable.
@@ -186,8 +235,9 @@ def train():
                 with tf.device('/gpu:%d' % i):
                     with tf.name_scope('tower_%d' % (i)) as scope:
                         is_training = tf.placeholder(tf.bool)
-                        loss = tower_loss(scope, batch_images, batch_labels,
-                                          is_training)
+                        loss = tower_loss(
+                            scope, batch_images, batch_labels, is_training,
+                            dataset.get_human_readable_to_label())
                         # Reuse variables for the next tower.
                         tf.get_variable_scope().reuse_variables()
                         # Calculate the gradients for the batch of data on this CIFAR tower.
@@ -222,7 +272,6 @@ def train():
         # Group all updates to into a single train op.
         update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
         with tf.control_dependencies(update_ops):
-            # train_op = optimizer.minimize(loss)
             train_op = tf.group(apply_gradient_op, variables_averages_op)
         saver = tf.train.Saver(tf.global_variables())
         summary_op = tf.summary.merge(summaries)
@@ -251,9 +300,9 @@ def train():
             summary_writer = tf.summary.FileWriter(
                 os.path.join(FLAGS.train_dir, 'train'), sess.graph)
             vtrain_summary_writer = tf.summary.FileWriter(
-                os.path.join(FLAGS.train_dir, 'validation_train'), sess.graph)
+                os.path.join(FLAGS.train_dir, 'validation_train'))
             vtest_summary_writer = tf.summary.FileWriter(
-                os.path.join(FLAGS.train_dir, 'validation_test'), sess.graph)
+                os.path.join(FLAGS.train_dir, 'validation_test'))
             batch_idx = 0
             while True:
                 start_time = time.time()
@@ -265,7 +314,6 @@ def train():
                     })
                 batch_idx = global_step_v // FLAGS.num_gpus
                 duration = time.time() - start_time
-                # assert not np.isnan(loss_value), 'Model diverged with loss = NaN'
                 if global_step_v % (100 * FLAGS.num_gpus) == 0:
                     vtrain_loss_value, vtrain_summary_str = sess.run(
                         [loss, vtrain_summary_op],
@@ -288,14 +336,13 @@ def train():
                           (datetime.now(), batch_idx, batch_idx //
                            num_batch_per_epoch, loss_value, vtrain_loss_value,
                            vtest_loss_value, examples_per_sec, sec_per_batch))
-                if global_step_v % (100 * FLAGS.num_gpus) == 0:
                     summary_writer.add_summary(summary_str, batch_idx)
                     vtrain_summary_writer.add_summary(vtrain_summary_str,
                                                       batch_idx)
                     vtest_summary_writer.add_summary(vtest_summary_str,
                                                      batch_idx)
                 # Save the model checkpoint periodically.
-                if global_step_v % (10000 * FLAGS.num_gpus) == 0:
+                if global_step_v % (3000 * FLAGS.num_gpus) == 0:
                     checkpoint_path = os.path.join(FLAGS.train_dir,
                                                    'model.ckpt')
                     saver.save(sess, checkpoint_path, global_step=batch_idx)
@@ -306,10 +353,22 @@ def train():
 
 
 def main(argv=None):
-    if tf.gfile.Exists(FLAGS.train_dir):
-        tf.gfile.DeleteRecursively(FLAGS.train_dir)
-    tf.gfile.MakeDirs(FLAGS.train_dir)
-    train()
+    assert FLAGS.comment is not None, "Please comments, for example why do you train? what do you want to verify?"
+    if FLAGS.restore_path is None:
+        if tf.gfile.Exists(FLAGS.train_dir):
+            ans = input('"%s" will be removed!! are you sure (y/N)? ' %
+                        FLAGS.train_dir)
+            if ans == 'Y' or ans == 'y':
+                # when not restore, remove follows (old) for new training
+                tf.gfile.DeleteRecursively(FLAGS.train_dir)
+                print('rm -rf "%s" complete!' % FLAGS.train_dir)
+            else:
+                exit()
+        tf.gfile.MakeDirs(FLAGS.train_dir)
+        with open(os.path.join(FLAGS.train_dir, 'config.json'), 'w') as out:
+            json.dump(flags.FLAGS.flag_values_dict(), out)
+        print(flags.FLAGS.flag_values_dict().items())
+        train()
 
 
 if __name__ == '__main__':
