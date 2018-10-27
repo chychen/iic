@@ -126,7 +126,6 @@ def create_validation_test_dataset():
                       for code in label_codes]
             # H: unsigned short, encode to byte code
             validation_labels.append(array.array('H', labels).tostring())
-    # counterrr = 0
     for filename in validation_image_filenames:
         if filename not in test_image_filenames:
             raise FileNotFoundError(
@@ -216,8 +215,8 @@ def create_label_to_classes():
 
 
 def main():
-    # create_label_to_classes()
-    # create_validation_test_dataset()
+    create_label_to_classes()
+    create_validation_test_dataset()
     create_train_dataset()
 
 

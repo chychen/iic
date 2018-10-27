@@ -37,18 +37,10 @@ class Dataset(object):
     def __init__(self, train_data_path, validation_train_data_path,
                  validation_test_data_path, batch_size, buffer_size,
                  num_threads):
-
         LABEL_TO_CLASS_PATH = '../inputs/label_to_class.json'
         with open(LABEL_TO_CLASS_PATH, 'r') as infile:
             self.label_class_mapping = json.load(infile)
         self.dataset = {}
-        # temp = tf.data.TFRecordDataset(
-        #     train_data_path).map(self.decode, num_threads)
-        # self.dataset['train'] = temp.shard(10, 0)
-        # for i in range(1, 9):
-        #     self.dataset['train'].concatenate(temp.shard(10, i))
-        # self.dataset['validation_train'] = temp.shard(10, 9)
-        # self.dataset['validation_train'] = temp.skip(train_size) # very slow if `train_size` is a huge number.
         ########################
         #### train ###
         self.dataset['train'] = tf.data.TFRecordDataset(train_data_path).map(
@@ -125,6 +117,40 @@ class Dataset(object):
 
     def get_human_readable_to_label(self):
         return self.label_class_mapping['human_to_label']
+
+
+# class TestDataset(object):
+#     def __init__(self, test_data_path, num_threads=10, batch_size=64):
+#         self.dataset = tf.data.TFRecordDataset(test_data_path).map(
+#             self.decode, num_threads).batch(batch_size)
+#         self.iterator = self.dataset.make_one_shot_iterator()
+
+#     def get_next(self):
+#         """
+#         Returns:
+#             Images: 4D tensor of [batch_size, height, width, 3].
+#             labels: 2D tensor of [batch_size, num_classes]
+#         """
+#         return self.iterator.get_next()
+
+#     def decode(self, serialized_example):
+#         # 3. Decode the record read by the reader
+#         feature = {
+#             'image/encoded': tf.FixedLenFeature([], tf.string),
+#             'image/class/label': tf.FixedLenFeature([], tf.string),
+#             'image/height': tf.FixedLenFeature([], tf.int64),
+#             'image/width': tf.FixedLenFeature([], tf.int64)
+#         }
+#         features = tf.parse_single_example(
+#             serialized_example, features=feature)
+#         # 4. Convert the image data from string back to the numbers
+#         image = tf.image.decode_jpeg(features['image/encoded'], channels=3)
+#         # height = features['image/height']
+#         # width = features['image/width']
+#         # 5. preprocessing
+#         image = tf.image.resize_image_with_pad(image, 256, 256)
+#         image = tf.image.per_image_standardization(image)
+#         return image
 
 
 # Deprecated testing code

@@ -230,11 +230,11 @@ def train():
             'train images', batch_images, collections=LOG_COLLECTIONS)
         # Calculate the gradients for each model tower.
         tower_grads = []
+        is_training = tf.placeholder(tf.bool)
         with tf.variable_scope(tf.get_variable_scope()):
             for i in range(FLAGS.num_gpus):
                 with tf.device('/gpu:%d' % i):
                     with tf.name_scope('tower_%d' % (i)) as scope:
-                        is_training = tf.placeholder(tf.bool)
                         loss = tower_loss(
                             scope, batch_images, batch_labels, is_training,
                             dataset.get_human_readable_to_label())
@@ -273,17 +273,21 @@ def train():
         update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
         with tf.control_dependencies(update_ops):
             train_op = tf.group(apply_gradient_op, variables_averages_op)
-        saver = tf.train.Saver(tf.global_variables())
+        saver = tf.train.Saver(tf.global_variables(), max_to_keep=10)
         summary_op = tf.summary.merge(summaries)
         vtrain_summary_op = tf.summary.merge(vtrain_summaries)
         vtest_summary_op = tf.summary.merge(vtest_summaries)
         init = tf.global_variables_initializer()
-        num_batch_per_epoch = int(1.7e6 // (FLAGS.batch_size * FLAGS.num_gpus))
+        num_batch_per_epoch = int(1.7e6 // FLAGS.batch_size)
         with tf.Session(
                 config=tf.ConfigProto(
                     allow_soft_placement=True,
                     log_device_placement=FLAGS.log_device_placement)) as sess:
             sess.run(init)
+            if FLAGS.restore_path is not None:
+                saver.restore(sess, FLAGS.restore_path)
+                print('successfully restore model from checkpoint: %s' %
+                      (FLAGS.restore_path))
             train_handle, vtrain_handle, vtest_handle = sess.run([
                 dataset.train_iterator.string_handle(),
                 dataset.vtrain_iterator.string_handle(),
@@ -314,7 +318,8 @@ def train():
                     })
                 batch_idx = global_step_v // FLAGS.num_gpus
                 duration = time.time() - start_time
-                if global_step_v % (100 * FLAGS.num_gpus) == 0:
+                if global_step_v % (
+                        100 * FLAGS.num_gpus) == 0:  # per 100 batches
                     vtrain_loss_value, vtrain_summary_str = sess.run(
                         [loss, vtrain_summary_op],
                         feed_dict={
@@ -342,10 +347,12 @@ def train():
                     vtest_summary_writer.add_summary(vtest_summary_str,
                                                      batch_idx)
                 # Save the model checkpoint periodically.
-                if global_step_v % (3000 * FLAGS.num_gpus) == 0:
+                if global_step_v % (2 * num_batch_per_epoch *
+                                    FLAGS.num_gpus) == 0:  # per 2 epochs
                     checkpoint_path = os.path.join(FLAGS.train_dir,
                                                    'model.ckpt')
                     saver.save(sess, checkpoint_path, global_step=batch_idx)
+                    print('successfully save model!')
             # Stop the threads
             coord.request_stop()
             # Wait for threads to stop
@@ -368,7 +375,7 @@ def main(argv=None):
         with open(os.path.join(FLAGS.train_dir, 'config.json'), 'w') as out:
             json.dump(flags.FLAGS.flag_values_dict(), out)
         print(flags.FLAGS.flag_values_dict().items())
-        train()
+    train()
 
 
 if __name__ == '__main__':
