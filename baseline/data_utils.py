@@ -3,6 +3,7 @@
 import json
 import tensorflow as tf
 from PIL import Image
+from data_augment import ImageNetPolicy
 import numpy as np
 
 NUM_CLASSES = 7178
@@ -98,9 +99,16 @@ class Dataset(object):
         # 5. preprocessing
         image = tf.image.resize_image_with_pad(image, 256, 256)
         if data_aug:
-            image = tf.image.random_flip_left_right(image)
-            image = tf.image.random_brightness(image, max_delta=63)
-            image = tf.image.random_contrast(image, lower=0.2, upper=1.8)
+            image = tf.cast(image, tf.uint8)
+            policy = ImageNetPolicy()
+            image = tf.py_func(policy, [image], tf.uint8)
+            # tf.Tensor.set_shape()
+            image.set_shape(shape=(256, 256, 3))
+            input(image)
+            image = tf.cast(image, tf.float32)
+            # image = tf.image.random_flip_left_right(image)
+            # image = tf.image.random_brightness(image, max_delta=63)
+            # image = tf.image.random_contrast(image, lower=0.2, upper=1.8)
         image = tf.image.per_image_standardization(image)
         return image, label
 
@@ -151,7 +159,6 @@ class Dataset(object):
 #         image = tf.image.resize_image_with_pad(image, 256, 256)
 #         image = tf.image.per_image_standardization(image)
 #         return image
-
 
 # Deprecated testing code
 # def test():

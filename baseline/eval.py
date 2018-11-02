@@ -15,12 +15,13 @@ from tensorboard import summary as summary_lib
 import tensorflow as tf
 from absl import flags
 import data_utils
-import tf_utils
 import resnet_model
 
 FLAGS = flags.FLAGS
 flags.DEFINE_string('restore_path', None,
-                    """Directory where to restore checkpoint.""")
+                    """path where to restore checkpoint.""")
+flags.DEFINE_string('result_path', 'jay_result.csv',
+                    """filepath where to save csv result.""")
 flags.DEFINE_string(
     'test_data_folder_path', '../inputs/stage_1_test_images',
     """folder path of test images""")
@@ -48,7 +49,7 @@ def data_generator():
     # return image
     image = tf.image.resize_image_with_pad(image, 256, 256)
     image = tf.image.per_image_standardization(image)
-    dict_ = tf.train.batch({'name': image_name, 'image': image}, 128, num_threads=10,
+    dict_ = tf.train.batch({'name': image_name, 'image': image}, 128, num_threads=20,
                            allow_smaller_final_batch=True)
     return dict_
 
@@ -157,7 +158,7 @@ def eval():
                         submission['labels'] = None
                         submission.update(predicted_df)
                         submission.update(tuning_labels)
-                        submission.to_csv('result.csv')
+                        submission.to_csv(FLAGS.result_path)
                         break
                 # Stop the threads
                 coord.request_stop()

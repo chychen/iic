@@ -1,9 +1,8 @@
 #!/bin/bash
 python train.py \
---restore_path='log/v2/model.ckpt-10000' \
---comment="first try with well coded program" \
---train_dir="log/v2" \
+--comment="try autoaugment" \
+--train_dir="log/v3" \
 --num_gpus=4 \
---buffer_size=100000 \
+--buffer_size=10000 \
 --num_threads=40 \
 --batch_size=256

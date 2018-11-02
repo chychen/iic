@@ -319,7 +319,8 @@ def train():
                 batch_idx = global_step_v // FLAGS.num_gpus
                 duration = time.time() - start_time
                 if global_step_v % (
-                        100 * FLAGS.num_gpus) == 0:  # per 100 batches
+                        100 * FLAGS.num_gpus  # per 100 batches
+                ) == 0 or global_step_v == 0:
                     vtrain_loss_value, vtrain_summary_str = sess.run(
                         [loss, vtrain_summary_op],
                         feed_dict={
