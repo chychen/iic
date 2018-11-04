@@ -94,22 +94,25 @@ class Dataset(object):
         # label is not sorted -> validate_indices=False
         label = tf.sparse_to_dense(
             label, (NUM_CLASSES, ), 1, 0, validate_indices=False)
-        # height = features['image/height']
-        # width = features['image/width']
+        height = tf.cast(features['image/height'], tf.float32)
+        width = tf.cast(features['image/width'], tf.float32)
         # 5. preprocessing
-        image = tf.image.resize_image_with_pad(image, 256, 256)
+        ratio_w = width / 256
+        ratio_h = height / 256
+        ratio = tf.round(tf.maximum(ratio_w, ratio_h))
+        image = tf.cast(image, tf.float32)
+        image = tf.cond(ratio > 1, lambda: tf.image.resize_images(image, [tf.cast(height/ratio, tf.int32), tf.cast(width/ratio, tf.int32)]), lambda: image)
         if data_aug:
             image = tf.cast(image, tf.uint8)
             policy = ImageNetPolicy()
             image = tf.py_func(policy, [image], tf.uint8)
-            # tf.Tensor.set_shape()
             image.set_shape(shape=(256, 256, 3))
-            input(image)
             image = tf.cast(image, tf.float32)
             # image = tf.image.random_flip_left_right(image)
             # image = tf.image.random_brightness(image, max_delta=63)
             # image = tf.image.random_contrast(image, lower=0.2, upper=1.8)
         image = tf.image.per_image_standardization(image)
+        image = tf.image.resize_image_with_pad(image, 256, 256)
         return image, label
 
     def get_next(self):
